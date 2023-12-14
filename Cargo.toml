@@ -1,0 +1,20 @@
+[package]
+name = "hyper-client-io-wizard"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Client IO builder for hyper-1"
+
+categories = ["network-programming", "web-programming", "web-programming::http-client"]
+documentation = "https://docs.rs/hyper-client-io-wizard"
+homepage = "https://github.com/swizard0/hyper-client-io-wizard"
+repository = "https://github.com/swizard0/hyper-client-io-wizard"
+keywords = ["hyper", "http", "https", "client", "request", "response"]
+readme = "README.md"
+
+[dependencies]
+log = "^0.4"
+http = "^1.0"
+futures = "^0.3"
+
+hyper = { version = "^1", features = ["full"] }
