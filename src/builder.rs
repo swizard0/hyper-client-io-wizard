@@ -6,7 +6,6 @@ use std::{
         IpAddr,
         Ipv4Addr,
         Ipv6Addr,
-        SocketAddr,
     },
 };
 
@@ -16,38 +15,85 @@ use http::{
     },
 };
 
-mod tcp_keepalive;
+use hyper_util::{
+    client::{
+        legacy,
+    },
+};
+
+use crate::{
+    resolver,
+};
+
+#[derive(Debug)]
+pub enum Error {
+    ResolverBuild(hickory_resolver::error::ResolveError),
+}
+
+pub struct ResolverBuilder {
+    resolver_kind: resolver::ResolverKind,
+}
+
+impl ResolverBuilder {
+    pub(super) fn new() -> Self {
+        Self {
+            resolver_kind: resolver::ResolverKind::System,
+        }
+    }
+
+    /// Creates a system configuration.
+    /// This will use `/etc/resolv.conf` on Unix OSes and the registry on Windows.
+    ///
+    /// Default resolver is `system`.
+    pub fn system(mut self) -> Self {
+        self.resolver_kind = resolver::ResolverKind::System;
+        self
+    }
+
+    /// Creates a configuration using 8.8.8.8, 8.8.4.4 and 2001:4860:4860::8888, 2001:4860:4860::8844.
+    ///
+    /// Default resolver is `system`.
+    pub fn google(mut self) -> Self {
+        self.resolver_kind = resolver::ResolverKind::Google;
+        self
+    }
+
+    /// Creates a configuration using 8.8.8.8, 8.8.4.4 and 2001:4860:4860::8888, 2001:4860:4860::8844.
+    /// This limits the registered connections to just TLS lookups.
+    ///
+    /// Default resolver is `system`.
+    pub fn google_tls(mut self) -> Self {
+        self.resolver_kind = resolver::ResolverKind::GoogleTls;
+        self
+    }
+
+    /// Creates a configuration using 8.8.8.8, 8.8.4.4 and 2001:4860:4860::8888, 2001:4860:4860::8844.
+    /// This limits the registered connections to just HTTPS lookups.
+    ///
+    /// Default resolver is `system`.
+    pub fn google_https(mut self) -> Self {
+        self.resolver_kind = resolver::ResolverKind::GoogleHttps;
+        self
+    }
+
+    /// Build resolver and proceed with connection setup.
+    pub fn connection_setup(self, uri: Uri) -> Result<IoBuilder, Error> {
+        let resolver = resolver::HickoryResolver::new(self.resolver_kind)
+            .map_err(Error::ResolverBuild)?;
+        Ok(IoBuilder::new(resolver, uri))
+    }
+}
 
 pub struct IoBuilder {
     uri: Uri,
-    enforce_http: bool,
-    connect_timeout: Option<Duration>,
-    happy_eyeballs_timeout: Option<Duration>,
-    tcp_keepalive_config: tcp_keepalive::TcpKeepaliveConfig,
-    local_address_ipv4: Option<Ipv4Addr>,
-    local_address_ipv6: Option<Ipv6Addr>,
-    nodelay: bool,
-    reuse_address: bool,
-    send_buffer_size: Option<usize>,
-    recv_buffer_size: Option<usize>,
-    interface: Option<String>,
+    http_connector: legacy::connect::HttpConnector<resolver::HickoryResolver>,
 }
 
 impl IoBuilder {
-    pub(super) fn new(uri: Uri) -> Self {
+    fn new(resolver: resolver::HickoryResolver, uri: Uri) -> Self {
         Self {
             uri,
-            enforce_http: false,
-            connect_timeout: None,
-            happy_eyeballs_timeout: None,
-            tcp_keepalive_config: tcp_keepalive::TcpKeepaliveConfig::default(),
-            local_address_ipv4: None,
-            local_address_ipv6: None,
-            nodelay: false,
-            reuse_address: false,
-            send_buffer_size: None,
-            recv_buffer_size: None,
-            interface: None,
+            http_connector: legacy::connect::HttpConnector::new_with_resolver(resolver),
         }
     }
 
@@ -57,42 +103,42 @@ impl IoBuilder {
     /// If `None`, keepalive is disabled.
     ///
     /// Default is `None`.
-    #[inline]
-    pub fn set_keepalive(&mut self, time: Option<Duration>) {
-        self.tcp_keepalive_config.time = time;
+    pub fn keepalive(mut self, time: Option<Duration>) -> Self {
+        self.http_connector.set_keepalive(time);
+        self
     }
 
     /// Set the duration between two successive TCP keepalive retransmissions,
     /// if acknowledgement to the previous keepalive transmission is not received.
-    #[inline]
-    pub fn set_keepalive_interval(&mut self, interval: Option<Duration>) {
-        self.tcp_keepalive_config.interval = interval;
+    pub fn keepalive_interval(mut self, interval: Option<Duration>) -> Self {
+        self.http_connector.set_keepalive_interval(interval);
+        self
     }
 
     /// Set the number of retransmissions to be carried out before declaring that remote end is not available.
-    #[inline]
-    pub fn set_keepalive_retries(&mut self, retries: Option<u32>) {
-        self.tcp_keepalive_config.retries = retries;
+    pub fn keepalive_retries(mut self, retries: Option<u32>) -> Self {
+        self.http_connector.set_keepalive_retries(retries);
+        self
     }
 
     /// Set that all sockets have `SO_NODELAY` set to the supplied value `nodelay`.
     ///
     /// Default is `false`.
-    #[inline]
-    pub fn set_nodelay(&mut self, nodelay: bool) {
-        self.nodelay = nodelay;
+    pub fn nodelay(mut self, nodelay: bool) -> Self {
+        self.http_connector.set_nodelay(nodelay);
+        self
     }
 
     /// Sets the value of the SO_SNDBUF option on the socket.
-    #[inline]
-    pub fn set_send_buffer_size(&mut self, size: Option<usize>) {
-        self.send_buffer_size = size;
+    pub fn send_buffer_size(mut self, size: Option<usize>) -> Self {
+        self.http_connector.set_send_buffer_size(size);
+        self
     }
 
     /// Sets the value of the SO_RCVBUF option on the socket.
-    #[inline]
-    pub fn set_recv_buffer_size(&mut self, size: Option<usize>) {
-        self.recv_buffer_size = size;
+    pub fn recv_buffer_size(mut self, size: Option<usize>) -> Self {
+        self.http_connector.set_recv_buffer_size(size);
+        self
     }
 
     /// Set that all sockets are bound to the configured address before connection.
@@ -100,28 +146,16 @@ impl IoBuilder {
     /// If `None`, the sockets will not be bound.
     ///
     /// Default is `None`.
-    #[inline]
-    pub fn set_local_address(&mut self, addr: Option<IpAddr>) {
-        let (v4, v6) = match addr {
-            Some(IpAddr::V4(a)) => (Some(a), None),
-            Some(IpAddr::V6(a)) => (None, Some(a)),
-            _ => (None, None),
-        };
-
-        let cfg = self;
-
-        cfg.local_address_ipv4 = v4;
-        cfg.local_address_ipv6 = v6;
+    pub fn local_address(mut self, addr: Option<IpAddr>) -> Self {
+        self.http_connector.set_local_address(addr);
+        self
     }
 
     /// Set that all sockets are bound to the configured IPv4 or IPv6 address (depending on host's
     /// preferences) before connection.
-    #[inline]
-    pub fn set_local_addresses(&mut self, addr_ipv4: Ipv4Addr, addr_ipv6: Ipv6Addr) {
-        let cfg = self;
-
-        cfg.local_address_ipv4 = Some(addr_ipv4);
-        cfg.local_address_ipv6 = Some(addr_ipv6);
+    pub fn local_addresses(mut self, addr_ipv4: Ipv4Addr, addr_ipv6: Ipv6Addr) -> Self {
+        self.http_connector.set_local_addresses(addr_ipv4, addr_ipv6);
+        self
     }
 
     /// Set the connect timeout.
@@ -130,9 +164,9 @@ impl IoBuilder {
     /// evenly divided across them.
     ///
     /// Default is `None`.
-    #[inline]
-    pub fn set_connect_timeout(&mut self, dur: Option<Duration>) {
-        self.connect_timeout = dur;
+    pub fn connect_timeout(mut self, dur: Option<Duration>) -> Self {
+        self.http_connector.set_connect_timeout(dur);
+        self
     }
 
     /// Set timeout for [RFC 6555 (Happy Eyeballs)][RFC 6555] algorithm.
@@ -147,17 +181,16 @@ impl IoBuilder {
     /// Default is 300 milliseconds.
     ///
     /// [RFC 6555]: https://tools.ietf.org/html/rfc6555
-    #[inline]
-    pub fn set_happy_eyeballs_timeout(&mut self, dur: Option<Duration>) {
-        self.happy_eyeballs_timeout = dur;
+    pub fn happy_eyeballs_timeout(mut self, dur: Option<Duration>) -> Self {
+        self.http_connector.set_happy_eyeballs_timeout(dur);
+        self
     }
 
     /// Set that all socket have `SO_REUSEADDR` set to the supplied value `reuse_address`.
     ///
     /// Default is `false`.
-    #[inline]
-    pub fn set_reuse_address(&mut self, reuse_address: bool) -> &mut Self {
-        self.reuse_address = reuse_address;
+    pub fn reuse_address(mut self, reuse_address: bool) -> Self {
+        self.http_connector.set_reuse_address(reuse_address);
         self
     }
 
@@ -174,9 +207,8 @@ impl IoBuilder {
     ///
     /// [VRF]: https://www.kernel.org/doc/Documentation/networking/vrf.txt
     #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
-    #[inline]
-    pub fn set_interface<S: Into<String>>(&mut self, interface: S) -> &mut Self {
-        self.interface = Some(interface.into());
+    pub fn interface<S: Into<String>>(mut self, interface: S) -> Self {
+        self.http_connector.set_interface(interface);
         self
     }
 }

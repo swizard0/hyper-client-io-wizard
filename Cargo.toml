@@ -15,9 +15,20 @@ readme = "README.md"
 [dependencies]
 log = "^0.4"
 http = "^1.0"
-socket2 = "^0.5"
 futures = "^0.3"
 async-socks5 = "^0.5"
+tower-service = "^0.3"
 
 hyper = { version = "^1", features = ["full"] }
 tokio = { version = "^1", features = ["full"] }
+hyper-util = { version = "^0.1", features = ["full"] }
+
+hickory-resolver.version = "^0.24"
+hickory-resolver.features = [
+  "system-config",
+  "tokio-runtime",
+  "dns-over-rustls",
+  "dns-over-tls",
+  "dns-over-https-rustls",
+  "dns-over-https"
+]

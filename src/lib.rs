@@ -11,14 +11,15 @@ use tokio::{
 };
 
 pub mod builder;
+pub mod resolver;
 
 pub struct Io {
     kind: IoKind,
 }
 
 impl Io {
-    pub fn builder(uri: Uri) -> builder::IoBuilder {
-        builder::IoBuilder::new(uri)
+    pub fn resolver_setup() -> builder::ResolverBuilder {
+        builder::ResolverBuilder::new()
     }
 }
 
