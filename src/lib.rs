@@ -14,7 +14,6 @@ use hyper_util::{
 
 pub mod builder;
 
-mod proxy;
 mod resolver;
 
 pub struct Io {
@@ -37,5 +36,5 @@ struct IoTcp {
 }
 
 struct IoTcpTls {
-    stream: (),
+    stream: TokioIo<tokio_rustls::client::TlsStream<TcpStream>>,
 }

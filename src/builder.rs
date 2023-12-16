@@ -1,4 +1,7 @@
 use std::{
+    sync::{
+        Arc,
+    },
     time::{
         Duration,
     },
@@ -24,12 +27,18 @@ use hyper_util::{
     },
 };
 
+use tokio::{
+    net::{
+        TcpStream,
+    },
+};
+
 use crate::{
-    proxy,
     resolver,
     Io,
     IoKind,
     IoTcp,
+    IoTcpTls,
 };
 
 #[derive(Debug)]
@@ -40,10 +49,22 @@ pub enum Error {
     UriMissingHost {
         uri: Uri,
     },
+    UriUnsupportedHttpsScheme {
+        uri: Uri,
+        scheme: http::uri::Scheme,
+    },
     ResolverBuild(hickory_resolver::error::ResolveError),
+    TlsNonEmptyAlpnProtocols,
+    TlsNativeCertsLoad(std::io::Error),
+    TlsNativeCertAdd(rustls::Error),
+    TlsInvalidDnsName {
+        hostname: String,
+        error: rustls::pki_types::InvalidDnsNameError,
+    },
     Connection(Box<dyn std::error::Error>),
     ConnectionToSocks5(Box<dyn std::error::Error>),
     ConnectionViaSocks5(async_socks5::Error),
+    ConnectionTls(std::io::Error),
 }
 
 pub struct ResolverBuilder {
@@ -94,29 +115,38 @@ impl ResolverBuilder {
 
     /// Build resolver and proceed with connection setup.
     pub fn connection_setup(self, uri: Uri) -> Result<ConnectionBuilder, Error> {
-        if uri.scheme().is_none() {
-            return Err(Error::UriMissingScheme { uri, });
-        }
+        let uri_scheme = uri.scheme()
+            .ok_or_else(|| Error::UriMissingScheme { uri: uri.clone(), })?
+            .clone();
         let uri_host = uri.host()
             .ok_or_else(|| Error::UriMissingHost { uri: uri.clone(), })?
             .to_string();
         let resolver = resolver::HickoryResolver::new(self.resolver_kind)
             .map_err(Error::ResolverBuild)?;
-        Ok(ConnectionBuilder::new(resolver, uri, uri_host))
+        Ok(ConnectionBuilder::new(resolver, uri, uri_host, uri_scheme))
     }
 }
 
 pub struct ConnectionBuilder {
     uri: Uri,
     uri_host: String,
+    uri_scheme: http::uri::Scheme,
     http_connector: legacy::connect::HttpConnector<resolver::HickoryResolver>,
 }
 
 impl ConnectionBuilder {
-    fn new(resolver: resolver::HickoryResolver, uri: Uri, uri_host: String) -> Self {
+    fn new(
+        resolver: resolver::HickoryResolver,
+        uri: Uri,
+        uri_host: String,
+        uri_scheme: http::uri::Scheme,
+    )
+        -> Self
+    {
         Self {
             uri,
             uri_host,
+            uri_scheme,
             http_connector: legacy::connect::HttpConnector::new_with_resolver(resolver),
         }
     }
@@ -237,17 +267,8 @@ impl ConnectionBuilder {
     }
 
     /// Build and establish connection
-    pub async fn establish(mut self) -> Result<Io, Error> {
-        let stream =
-            tower_service::Service::call(
-                &mut self.http_connector,
-                self.uri,
-            )
-            .await
-            .map_err(|error| {
-                Error::Connection(Box::new(error) as Box<dyn std::error::Error>)
-            })?;
-
+    pub async fn establish(self) -> Result<Io, Error> {
+        let stream = connection_establish_tcp(self.http_connector, self.uri).await?;
         Ok(Io {
             kind: IoKind::Tcp(
                 IoTcp {
@@ -258,13 +279,14 @@ impl ConnectionBuilder {
     }
 
     /// Build connection and proceed with tls setup.
-    pub fn tls_setup(self) -> TlsBuilder {
-        TlsBuilder::new(
-            proxy::ProxyKind::None,
-            self.http_connector,
+    pub async fn tls_setup(self) -> Result<TlsBuilder, Error> {
+        let stream = connection_establish_tcp(self.http_connector, self.uri.clone()).await?;
+        Ok(TlsBuilder::new(
+            stream,
             self.uri,
             self.uri_host,
-        )
+            self.uri_scheme,
+        ))
     }
 
     /// Build connection and proceed with socks5 proxy setup.
@@ -274,6 +296,7 @@ impl ConnectionBuilder {
             self.http_connector,
             self.uri,
             self.uri_host,
+            self.uri_scheme,
         )
     }
 }
@@ -302,6 +325,7 @@ impl From<Socks5Auth> for async_socks5::Auth {
 pub struct Socks5ProxyBuilder {
     uri: Uri,
     uri_host: String,
+    uri_scheme: http::uri::Scheme,
     http_connector: legacy::connect::HttpConnector<resolver::HickoryResolver>,
     proxy_addr: Uri,
     proxy_auth: Option<Socks5Auth>,
@@ -313,12 +337,14 @@ impl Socks5ProxyBuilder {
         http_connector: legacy::connect::HttpConnector<resolver::HickoryResolver>,
         uri: Uri,
         uri_host: String,
+        uri_scheme: http::uri::Scheme,
     )
         -> Self
     {
         Self {
             uri,
             uri_host,
+            uri_scheme,
             http_connector,
             proxy_addr,
             proxy_auth: None,
@@ -336,75 +362,350 @@ impl Socks5ProxyBuilder {
     }
 
     /// Build and establish connection
-    pub async fn establish(mut self) -> Result<Io, Error> {
-        let port = match self.uri.port() {
-            Some(port) =>
-                port.as_u16(),
-            None =>
-                if self.uri.scheme() == Some(&http::uri::Scheme::HTTPS) {
-                    443
-                } else {
-                    80
-                },
-        };
-        let target_addr =
-            async_socks5::AddrKind::Domain(self.uri_host, port);
-
-        let tokio_io_stream =
-            tower_service::Service::call(
-                &mut self.http_connector,
+    pub async fn establish(self) -> Result<Io, Error> {
+        let stream =
+            connection_establish_proxy(
                 self.proxy_addr,
+                self.proxy_auth,
+                self.http_connector,
+                self.uri,
+                self.uri_host,
             )
-            .await
-            .map_err(|error| {
-                Error::ConnectionToSocks5(Box::new(error) as Box<dyn std::error::Error>)
-            })?;
-        let stream = tokio_io_stream
-            .into_inner();
-
-        let mut buf_stream =
-            tokio::io::BufStream::new(stream);
-        let _addr_kind =
-            async_socks5::connect(
-                &mut buf_stream,
-                target_addr,
-                self.proxy_auth.map(Into::into),
-            )
-            .await
-            .map_err(Error::ConnectionViaSocks5)?;
+            .await?;
         Ok(Io {
             kind: IoKind::Tcp(
                 IoTcp {
-                    stream: TokioIo::new(
-                        buf_stream.into_inner(),
-                    ),
+                    stream,
                 },
             ),
         })
+    }
+
+    /// Build connection and proceed with tls setup.
+    pub async fn tls_setup(self) -> Result<TlsBuilder, Error> {
+        let stream =
+            connection_establish_proxy(
+                self.proxy_addr,
+                self.proxy_auth,
+                self.http_connector,
+                self.uri.clone(),
+                self.uri_host.clone(),
+            )
+            .await?;
+
+        Ok(TlsBuilder::new(
+            stream,
+            self.uri,
+            self.uri_host,
+            self.uri_scheme,
+        ))
     }
 }
 
 pub struct TlsBuilder {
     uri: Uri,
     uri_host: String,
-    http_connector: legacy::connect::HttpConnector<resolver::HickoryResolver>,
-    proxy_kind: proxy::ProxyKind,
+    uri_scheme: http::uri::Scheme,
+    stream: TokioIo<TcpStream>,
 }
 
 impl TlsBuilder {
     fn new(
-        proxy_kind: proxy::ProxyKind,
-        http_connector: legacy::connect::HttpConnector<resolver::HickoryResolver>,
+        stream: TokioIo<TcpStream>,
         uri: Uri,
         uri_host: String,
+        uri_scheme: http::uri::Scheme,
     )
         -> Self
     {
         Self {
             uri,
             uri_host,
-            http_connector,
-            proxy_kind,
+            uri_scheme,
+            stream,
         }
     }
+
+    /// Passes a rustls [`ClientConfig`] to configure the TLS connection
+    ///
+    /// The [`alpn_protocols`](ClientConfig::alpn_protocols) field is
+    /// required to be empty (or the function will panic) and will be
+    /// rewritten to match the enabled schemes (see
+    /// [`enable_http1`](TlsBuilderConfig::enable_http1),
+    /// [`enable_http2`](TlsBuilderConfig::enable_http2)) before the
+    /// connector is built.
+    pub fn tls_config(self, config: rustls::ClientConfig) -> Result<TlsBuilderConfig, Error> {
+        if !config.alpn_protocols.is_empty() {
+            Err(Error::TlsNonEmptyAlpnProtocols)
+        } else {
+            Ok(TlsBuilderConfig::new(
+                config,
+                self.stream,
+                self.uri,
+                self.uri_host,
+                self.uri_scheme,
+            ))
+        }
+    }
+
+    /// Shorthand for using rustls safe defaults and native roots
+    pub fn native_roots(self) -> Result<TlsBuilderConfig, Error> {
+        let mut root_store = rustls::RootCertStore::empty();
+        let native_certs_iter = rustls_native_certs::load_native_certs()
+            .map_err(Error::TlsNativeCertsLoad)?;
+        for cert in native_certs_iter {
+            root_store.add(cert)
+                .map_err(Error::TlsNativeCertAdd)?;
+        }
+        Ok(TlsBuilderConfig::new(
+            rustls::ClientConfig::builder()
+                .with_root_certificates(root_store)
+                .with_no_client_auth(),
+            self.stream,
+            self.uri,
+            self.uri_host,
+            self.uri_scheme,
+        ))
+    }
+
+    /// Shorthand for using rustls safe defaults and Mozilla roots
+    pub fn webpki_roots(self) -> Result<TlsBuilderConfig, Error> {
+        let mut root_store = rustls::RootCertStore::empty();
+        root_store.extend(
+            webpki_roots::TLS_SERVER_ROOTS
+                .iter()
+                .cloned(),
+        );
+        Ok(TlsBuilderConfig::new(
+            rustls::ClientConfig::builder()
+                .with_root_certificates(root_store)
+                .with_no_client_auth(),
+            self.stream,
+            self.uri,
+            self.uri_host,
+            self.uri_scheme,
+        ))
+    }
+}
+
+pub struct TlsBuilderConfig {
+    uri: Uri,
+    uri_host: String,
+    uri_scheme: http::uri::Scheme,
+    stream: TokioIo<TcpStream>,
+    tls_config: rustls::ClientConfig,
+    https_only: bool,
+    http1_enabled: bool,
+    http2_enabled: bool,
+    override_server_name: Option<String>,
+}
+
+impl TlsBuilderConfig {
+    fn new(
+        tls_config: rustls::ClientConfig,
+        stream: TokioIo<TcpStream>,
+        uri: Uri,
+        uri_host: String,
+        uri_scheme: http::uri::Scheme,
+    )
+        -> Self
+    {
+        Self {
+            uri,
+            uri_host,
+            uri_scheme,
+            stream,
+            tls_config,
+            https_only: false,
+            http1_enabled: false,
+            http2_enabled: false,
+            override_server_name: None,
+        }
+    }
+
+    /// Enforce the use of HTTPS when connecting
+    ///
+    /// Only URLs using the HTTPS scheme will be connectable.
+    ///
+    /// Default is `https_or_http`.
+    pub fn https_only(mut self) -> Self {
+        self.https_only = true;
+        self
+    }
+
+    /// Allow both HTTPS and HTTP when connecting
+    ///
+    /// HTTPS URLs will be handled through rustls,
+    /// HTTP URLs will be handled directly.
+    ///
+    /// Default is `https_or_http`.
+    pub fn https_or_http(mut self) -> Self {
+        self.https_only = false;
+        self
+    }
+
+    /// Enable HTTP1
+    ///
+    /// This needs to be called explicitly, no protocol is enabled by default
+    pub fn enable_http1(mut self) -> Self {
+        self.http1_enabled = true;
+        self.http2_enabled = false;
+        self
+    }
+
+    /// Enable HTTP2
+    ///
+    /// This needs to be called explicitly, no protocol is enabled by default
+    pub fn enable_http2(mut self) -> Self {
+        self.http1_enabled = false;
+        self.http2_enabled = true;
+        self
+    }
+
+    /// Enable all HTTP versions
+    ///
+    /// For now, this enables both HTTP 1 and 2. In the future, other supported versions
+    /// will be enabled as well.
+    pub fn enable_all_versions(mut self) -> Self {
+        self.http1_enabled = true;
+        self.http2_enabled = true;
+        self
+    }
+
+    /// Override server name for the TLS stack
+    ///
+    /// By default, for each connection the library will extract host portion
+    /// of the destination URL and verify that server certificate contains
+    /// this value.
+    ///
+    /// If this method is called, the library will instead verify that server
+    /// certificate contains `override_server_name`. Domain name included in
+    /// the URL will not affect certificate validation.
+    pub fn with_server_name(mut self, override_server_name: String) -> Self {
+        self.override_server_name = Some(override_server_name);
+        self
+    }
+
+    /// Build and establish connection
+    pub async fn establish(mut self) -> Result<Io, Error> {
+        let mut alpn_protocols = Vec::new();
+        if self.http2_enabled {
+            alpn_protocols.push(b"h2".to_vec());
+        }
+        if self.http1_enabled {
+            alpn_protocols.push(b"http/1.1".to_vec());
+        }
+        self.tls_config.alpn_protocols = alpn_protocols;
+
+        if self.uri_scheme == http::uri::Scheme::HTTP && !self.https_only {
+            return Ok(Io {
+                kind: IoKind::Tcp(
+                    IoTcp {
+                        stream: self.stream,
+                    },
+                ),
+            });
+        }
+        if self.uri_scheme != http::uri::Scheme::HTTPS {
+            return Err(Error::UriUnsupportedHttpsScheme {
+                uri: self.uri,
+                scheme: self.uri_scheme,
+            });
+        }
+
+        let mut hostname =
+            match self.override_server_name.as_deref() {
+                Some(server_name) =>
+                    server_name,
+                None =>
+                    &self.uri_host,
+            };
+
+        hostname = hostname
+            .trim_start_matches('[')
+            .trim_end_matches(']');
+
+        let server_name = rustls::pki_types::ServerName::try_from(hostname)
+            .map_err(|error| Error::TlsInvalidDnsName {
+                hostname: hostname.to_string(),
+                error,
+            })?
+            .to_owned();
+
+        let connector =
+            tokio_rustls::TlsConnector::from(Arc::new(self.tls_config));
+        let tls = connector
+            .connect(server_name, self.stream.into_inner())
+            .await
+            .map_err(Error::ConnectionTls)?;
+
+        Ok(Io {
+            kind: IoKind::TcpTls(
+                IoTcpTls {
+                    stream: TokioIo::new(tls),
+                },
+            ),
+        })
+    }
+
+}
+
+async fn connection_establish_tcp(
+    mut http_connector: legacy::connect::HttpConnector<resolver::HickoryResolver>,
+    uri: Uri,
+)
+    -> Result<TokioIo<TcpStream>, Error>
+{
+    tower_service::Service::call(&mut http_connector, uri).await
+        .map_err(|error| {
+            Error::Connection(Box::new(error) as Box<dyn std::error::Error>)
+        })
+}
+
+async fn connection_establish_proxy(
+    proxy_addr: Uri,
+    proxy_auth: Option<Socks5Auth>,
+    mut http_connector: legacy::connect::HttpConnector<resolver::HickoryResolver>,
+    uri: Uri,
+    uri_host: String,
+)
+    -> Result<TokioIo<TcpStream>, Error>
+{
+    let port = match uri.port() {
+        Some(port) =>
+            port.as_u16(),
+        None =>
+            if uri.scheme() == Some(&http::uri::Scheme::HTTPS) {
+                443
+            } else {
+                80
+            },
+    };
+    let target_addr =
+        async_socks5::AddrKind::Domain(uri_host, port);
+
+    let tokio_io_stream =
+        tower_service::Service::call(
+            &mut http_connector,
+            proxy_addr,
+        )
+        .await
+        .map_err(|error| {
+            Error::ConnectionToSocks5(Box::new(error) as Box<dyn std::error::Error>)
+        })?;
+    let stream = tokio_io_stream
+        .into_inner();
+
+    let mut buf_stream =
+        tokio::io::BufStream::new(stream);
+    let _addr_kind =
+        async_socks5::connect(
+            &mut buf_stream,
+            target_addr,
+            proxy_auth.map(Into::into),
+        )
+        .await
+        .map_err(Error::ConnectionViaSocks5)?;
+
+    Ok(TokioIo::new(buf_stream.into_inner()))
 }

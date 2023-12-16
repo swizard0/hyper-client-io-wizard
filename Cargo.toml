@@ -17,11 +17,16 @@ log = "^0.4"
 http = "^1.0"
 futures = "^0.3"
 async-socks5 = "^0.5"
+tokio-rustls = "^0.25"
+webpki-roots = "^0.26"
 tower-service = "^0.3"
+rustls-pki-types = "^1"
+rustls-native-certs = { version = "^0.7" }
 
 hyper = { version = "^1", features = ["full"] }
 tokio = { version = "^1", features = ["full"] }
 hyper-util = { version = "^0.1", features = ["full"] }
+rustls = { version = "^0.22", features = ["default"] }
 
 hickory-resolver.version = "^0.24"
 hickory-resolver.features = [

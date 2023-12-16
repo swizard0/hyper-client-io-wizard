@@ -1,4 +1,0 @@
-
-pub enum ProxyKind {
-    None,
-}
