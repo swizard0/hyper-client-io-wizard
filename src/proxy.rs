@@ -1,0 +1,4 @@
+
+pub enum ProxyKind {
+    None,
+}

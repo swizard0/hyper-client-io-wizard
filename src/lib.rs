@@ -1,8 +1,4 @@
-use http::{
-    uri::{
-        Uri,
-    },
-};
+#![forbid(unsafe_code)]
 
 use tokio::{
     net::{
@@ -10,8 +6,16 @@ use tokio::{
     },
 };
 
+use hyper_util::{
+    rt::{
+        TokioIo,
+    },
+};
+
 pub mod builder;
-pub mod resolver;
+
+mod proxy;
+mod resolver;
 
 pub struct Io {
     kind: IoKind,
@@ -25,23 +29,13 @@ impl Io {
 
 enum IoKind {
     Tcp(IoTcp),
-    TcpSocks(IoTcpSocks),
     TcpTls(IoTcpTls),
-    TcpSocksTls(IoTcpSocksTls),
 }
 
 struct IoTcp {
-    stream: TcpStream,
-}
-
-struct IoTcpSocks {
-    stream: (),
+    stream: TokioIo<TcpStream>,
 }
 
 struct IoTcpTls {
-    stream: (),
-}
-
-struct IoTcpSocksTls {
     stream: (),
 }

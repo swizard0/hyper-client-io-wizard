@@ -19,15 +19,31 @@ use hyper_util::{
     client::{
         legacy,
     },
+    rt::{
+        TokioIo,
+    },
 };
 
 use crate::{
+    proxy,
     resolver,
+    Io,
+    IoKind,
+    IoTcp,
 };
 
 #[derive(Debug)]
 pub enum Error {
+    UriMissingScheme {
+        uri: Uri,
+    },
+    UriMissingHost {
+        uri: Uri,
+    },
     ResolverBuild(hickory_resolver::error::ResolveError),
+    Connection(Box<dyn std::error::Error>),
+    ConnectionToSocks5(Box<dyn std::error::Error>),
+    ConnectionViaSocks5(async_socks5::Error),
 }
 
 pub struct ResolverBuilder {
@@ -77,22 +93,30 @@ impl ResolverBuilder {
     }
 
     /// Build resolver and proceed with connection setup.
-    pub fn connection_setup(self, uri: Uri) -> Result<IoBuilder, Error> {
+    pub fn connection_setup(self, uri: Uri) -> Result<ConnectionBuilder, Error> {
+        if uri.scheme().is_none() {
+            return Err(Error::UriMissingScheme { uri, });
+        }
+        let uri_host = uri.host()
+            .ok_or_else(|| Error::UriMissingHost { uri: uri.clone(), })?
+            .to_string();
         let resolver = resolver::HickoryResolver::new(self.resolver_kind)
             .map_err(Error::ResolverBuild)?;
-        Ok(IoBuilder::new(resolver, uri))
+        Ok(ConnectionBuilder::new(resolver, uri, uri_host))
     }
 }
 
-pub struct IoBuilder {
+pub struct ConnectionBuilder {
     uri: Uri,
+    uri_host: String,
     http_connector: legacy::connect::HttpConnector<resolver::HickoryResolver>,
 }
 
-impl IoBuilder {
-    fn new(resolver: resolver::HickoryResolver, uri: Uri) -> Self {
+impl ConnectionBuilder {
+    fn new(resolver: resolver::HickoryResolver, uri: Uri, uri_host: String) -> Self {
         Self {
             uri,
+            uri_host,
             http_connector: legacy::connect::HttpConnector::new_with_resolver(resolver),
         }
     }
@@ -210,5 +234,177 @@ impl IoBuilder {
     pub fn interface<S: Into<String>>(mut self, interface: S) -> Self {
         self.http_connector.set_interface(interface);
         self
+    }
+
+    /// Build and establish connection
+    pub async fn establish(mut self) -> Result<Io, Error> {
+        let stream =
+            tower_service::Service::call(
+                &mut self.http_connector,
+                self.uri,
+            )
+            .await
+            .map_err(|error| {
+                Error::Connection(Box::new(error) as Box<dyn std::error::Error>)
+            })?;
+
+        Ok(Io {
+            kind: IoKind::Tcp(
+                IoTcp {
+                    stream,
+                },
+            ),
+        })
+    }
+
+    /// Build connection and proceed with tls setup.
+    pub fn tls_setup(self) -> TlsBuilder {
+        TlsBuilder::new(
+            proxy::ProxyKind::None,
+            self.http_connector,
+            self.uri,
+            self.uri_host,
+        )
+    }
+
+    /// Build connection and proceed with socks5 proxy setup.
+    pub fn socks5_proxy_setup(self, proxy_addr: Uri) -> Socks5ProxyBuilder {
+        Socks5ProxyBuilder::new(
+            proxy_addr,
+            self.http_connector,
+            self.uri,
+            self.uri_host,
+        )
+    }
+}
+
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub struct Socks5Auth {
+    pub username: String,
+    pub password: String,
+}
+
+impl From<async_socks5::Auth> for Socks5Auth {
+    fn from(auth: async_socks5::Auth) -> Self {
+        Self {
+            username: auth.username,
+            password: auth.password,
+        }
+    }
+}
+
+impl From<Socks5Auth> for async_socks5::Auth {
+    fn from(auth: Socks5Auth) -> Self {
+        async_socks5::Auth::new(auth.username, auth.password)
+    }
+}
+
+pub struct Socks5ProxyBuilder {
+    uri: Uri,
+    uri_host: String,
+    http_connector: legacy::connect::HttpConnector<resolver::HickoryResolver>,
+    proxy_addr: Uri,
+    proxy_auth: Option<Socks5Auth>,
+}
+
+impl Socks5ProxyBuilder {
+    fn new(
+        proxy_addr: Uri,
+        http_connector: legacy::connect::HttpConnector<resolver::HickoryResolver>,
+        uri: Uri,
+        uri_host: String,
+    )
+        -> Self
+    {
+        Self {
+            uri,
+            uri_host,
+            http_connector,
+            proxy_addr,
+            proxy_auth: None,
+        }
+    }
+
+    /// Configure a username + password authentication for the proxy.
+    ///
+    /// If `None`, no authentication is performed.
+    ///
+    /// Default is `None`.
+    pub fn auth(mut self, proxy_auth: Option<Socks5Auth>) -> Self {
+        self.proxy_auth = proxy_auth;
+        self
+    }
+
+    /// Build and establish connection
+    pub async fn establish(mut self) -> Result<Io, Error> {
+        let port = match self.uri.port() {
+            Some(port) =>
+                port.as_u16(),
+            None =>
+                if self.uri.scheme() == Some(&http::uri::Scheme::HTTPS) {
+                    443
+                } else {
+                    80
+                },
+        };
+        let target_addr =
+            async_socks5::AddrKind::Domain(self.uri_host, port);
+
+        let tokio_io_stream =
+            tower_service::Service::call(
+                &mut self.http_connector,
+                self.proxy_addr,
+            )
+            .await
+            .map_err(|error| {
+                Error::ConnectionToSocks5(Box::new(error) as Box<dyn std::error::Error>)
+            })?;
+        let stream = tokio_io_stream
+            .into_inner();
+
+        let mut buf_stream =
+            tokio::io::BufStream::new(stream);
+        let _addr_kind =
+            async_socks5::connect(
+                &mut buf_stream,
+                target_addr,
+                self.proxy_auth.map(Into::into),
+            )
+            .await
+            .map_err(Error::ConnectionViaSocks5)?;
+        Ok(Io {
+            kind: IoKind::Tcp(
+                IoTcp {
+                    stream: TokioIo::new(
+                        buf_stream.into_inner(),
+                    ),
+                },
+            ),
+        })
+    }
+}
+
+pub struct TlsBuilder {
+    uri: Uri,
+    uri_host: String,
+    http_connector: legacy::connect::HttpConnector<resolver::HickoryResolver>,
+    proxy_kind: proxy::ProxyKind,
+}
+
+impl TlsBuilder {
+    fn new(
+        proxy_kind: proxy::ProxyKind,
+        http_connector: legacy::connect::HttpConnector<resolver::HickoryResolver>,
+        uri: Uri,
+        uri_host: String,
+    )
+        -> Self
+    {
+        Self {
+            uri,
+            uri_host,
+            http_connector,
+            proxy_kind,
+        }
     }
 }

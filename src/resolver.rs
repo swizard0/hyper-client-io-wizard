@@ -36,6 +36,7 @@ use hyper_util::{
     },
 };
 
+#[derive(Clone)]
 pub struct HickoryResolver {
     hickory_resolver: Arc<AsyncResolver<GenericConnector<TokioRuntimeProvider>>>,
 }
