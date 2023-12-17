@@ -9,7 +9,7 @@ categories = ["network-programming", "web-programming", "web-programming::http-c
 documentation = "https://docs.rs/hyper-client-io-wizard"
 homepage = "https://github.com/swizard0/hyper-client-io-wizard"
 repository = "https://github.com/swizard0/hyper-client-io-wizard"
-keywords = ["hyper", "http", "https", "client", "request", "response"]
+keywords = ["hyper", "http", "https", "client"]
 readme = "README.md"
 
 [dependencies]
