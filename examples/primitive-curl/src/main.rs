@@ -44,6 +44,10 @@ struct CliArgs {
     /// additional headers for request
     #[clap(long)]
     header: Vec<String>,
+
+    /// post data (if empty GET request is performed)
+    #[clap(short, long)]
+    post_data: Option<String>,
 }
 
 #[derive(Debug)]
@@ -117,7 +121,7 @@ async fn main() -> Result<(), Error> {
         .establish()
         .await?;
 
-    let mut request = http::Request::builder()
+    let mut request_builder = http::Request::builder()
         .header(http::header::HOST, io.uri_host)
         .uri(uri);
     for additional_header in &cli_args.header {
@@ -126,12 +130,19 @@ async fn main() -> Result<(), Error> {
             .ok_or(Error::InvalidAdditionalHeader {
                 additional_header: additional_header.to_string(),
             })?;
-        request = request
+        request_builder = request_builder
             .header(header_name, header_value);
     }
-    let request = request
-        .method(http::method::Method::GET)
-        .body(http_body_util::Empty::<hyper::body::Bytes>::new())
+    let maybe_request = if let Some(post_data) = cli_args.post_data {
+        request_builder
+            .method(http::method::Method::POST)
+            .body(http_body_util::Full::<hyper::body::Bytes>::new(post_data.into()))
+    } else {
+        request_builder
+            .method(http::method::Method::GET)
+            .body(http_body_util::Full::<hyper::body::Bytes>::new(Default::default()))
+    };
+    let request = maybe_request
         .map_err(Error::RequestBuild)?;
     log::debug!("using request: {:?}", request);
 
