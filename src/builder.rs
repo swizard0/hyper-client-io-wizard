@@ -22,9 +22,6 @@ use hyper_util::{
     client::{
         legacy,
     },
-    rt::{
-        TokioIo,
-    },
 };
 
 use tokio::{
@@ -33,12 +30,16 @@ use tokio::{
     },
 };
 
+
 use crate::{
     resolver,
     Io,
+    Protocols,
+    IoStream,
     IoKind,
     IoTcp,
     IoTcpTls,
+    TokioIo,
 };
 
 #[derive(Debug)]
@@ -270,13 +271,18 @@ impl ConnectionBuilder {
     pub async fn establish(self) -> Result<Io, Error> {
         let stream = connection_establish_tcp(self.http_connector, self.uri).await?;
         Ok(Io {
-            kind: IoKind::Tcp(
-                IoTcp {
-                    stream,
-                },
-            ),
-            http1_support: true,
-            http2_support: false,
+            protocols: Protocols {
+                http1_support: true,
+                http2_support: false,
+            },
+            uri_host: self.uri_host,
+            stream: IoStream {
+                kind: IoKind::Tcp(
+                    IoTcp {
+                        stream,
+                    },
+                ),
+            },
         })
     }
 
@@ -371,17 +377,22 @@ impl Socks5ProxyBuilder {
                 self.proxy_auth,
                 self.http_connector,
                 self.uri,
-                self.uri_host,
+                self.uri_host.clone(),
             )
             .await?;
         Ok(Io {
-            kind: IoKind::Tcp(
-                IoTcp {
-                    stream,
-                },
-            ),
-            http1_support: true,
-            http2_support: false,
+            protocols: Protocols {
+                http1_support: true,
+                http2_support: false,
+            },
+            uri_host: self.uri_host,
+            stream: IoStream {
+                kind: IoKind::Tcp(
+                    IoTcp {
+                        stream,
+                    },
+                ),
+            },
         })
     }
 
@@ -603,13 +614,18 @@ impl TlsBuilderConfig {
 
         if self.uri_scheme == http::uri::Scheme::HTTP && !self.https_only {
             return Ok(Io {
-                kind: IoKind::Tcp(
-                    IoTcp {
-                        stream: self.stream,
-                    },
-                ),
-                http1_support: true,
-                http2_support: false,
+                protocols: Protocols {
+                    http1_support: true,
+                    http2_support: false,
+                },
+                uri_host: self.uri_host,
+                stream: IoStream {
+                    kind: IoKind::Tcp(
+                        IoTcp {
+                            stream: self.stream,
+                        },
+                    ),
+                },
             });
         }
         if self.uri_scheme != http::uri::Scheme::HTTPS {
@@ -646,16 +662,20 @@ impl TlsBuilderConfig {
             .map_err(Error::ConnectionTls)?;
 
         Ok(Io {
-            kind: IoKind::TcpTls(
-                IoTcpTls {
-                    stream: TokioIo::new(tls),
-                },
-            ),
-            http1_support: self.http1_enabled,
-            http2_support: self.http2_enabled,
+            protocols: Protocols {
+                http1_support: self.http1_enabled,
+                http2_support: self.http2_enabled,
+            },
+            uri_host: self.uri_host,
+            stream: IoStream {
+                kind: IoKind::TcpTls(
+                    IoTcpTls {
+                        stream: TokioIo::new(tls),
+                    },
+                ),
+            },
         })
     }
-
 }
 
 async fn connection_establish_tcp(

@@ -17,9 +17,10 @@ use tokio::{
     },
 };
 
-use hyper_util::{
+pub use hyper_util::{
     rt::{
         TokioIo,
+        TokioExecutor,
     },
 };
 
@@ -28,7 +29,12 @@ pub mod builder;
 mod resolver;
 
 pub struct Io {
-    kind: IoKind,
+    pub protocols: Protocols,
+    pub uri_host: String,
+    pub stream: IoStream,
+}
+
+pub struct Protocols {
     http1_support: bool,
     http2_support: bool,
 }
@@ -37,7 +43,9 @@ impl Io {
     pub fn resolver_setup() -> builder::ResolverBuilder {
         builder::ResolverBuilder::new()
     }
+}
 
+impl Protocols {
     pub fn http1_support_announced(&self) -> bool {
         self.http1_support
     }
@@ -45,6 +53,10 @@ impl Io {
     pub fn http2_support_announced(&self) -> bool {
         self.http2_support
     }
+}
+
+pub struct IoStream {
+    kind: IoKind,
 }
 
 enum IoKind {
@@ -60,7 +72,7 @@ struct IoTcpTls {
     stream: TokioIo<tokio_rustls::client::TlsStream<TcpStream>>,
 }
 
-impl hyper::rt::Read for Io {
+impl hyper::rt::Read for IoStream {
     fn poll_read(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: hyper::rt::ReadBufCursor<'_>) -> Poll<Result<(), io::Error>> {
         match &mut self.kind {
             IoKind::Tcp(io) =>
@@ -71,7 +83,7 @@ impl hyper::rt::Read for Io {
     }
 }
 
-impl hyper::rt::Write for Io {
+impl hyper::rt::Write for IoStream {
     fn poll_write(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<Result<usize, io::Error>> {
         match &mut self.kind {
             IoKind::Tcp(io) =>
