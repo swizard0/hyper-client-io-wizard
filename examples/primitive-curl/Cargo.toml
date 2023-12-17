@@ -9,6 +9,10 @@ description = "Code example for `hyper-client-io-wizard`"
 hyper-client-io-wizard = { path = "../.." }
 
 log = "^0.4"
+http = "^1.0"
+futures-util = "^0.3"
+http-body-util = "^0.1"
+pretty_env_logger = "^0.5"
 
 clap = { version = "^4", features = ["cargo", "derive"] }
 hyper = { version = "^1", features = ["full"] }
