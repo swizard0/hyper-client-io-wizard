@@ -9,5 +9,7 @@ description = "Code example for `hyper-client-io-wizard`"
 hyper-client-io-wizard = { path = "../.." }
 
 log = "^0.4"
+
+clap = { version = "^4", features = ["cargo", "derive"] }
 hyper = { version = "^1", features = ["full"] }
 tokio = { version = "^1", features = ["full"] }
