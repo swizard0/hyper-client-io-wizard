@@ -287,7 +287,9 @@ impl ConnectionBuilder {
     }
 
     /// Build connection and proceed with tls setup.
-    pub async fn tls_setup(self) -> Result<TlsBuilder, Error> {
+    pub async fn tls_setup(mut self) -> Result<TlsBuilder, Error> {
+        self.http_connector
+            .enforce_http(false);
         let stream = connection_establish_tcp(self.http_connector, self.uri.clone()).await?;
         Ok(TlsBuilder::new(
             stream,
@@ -397,7 +399,9 @@ impl Socks5ProxyBuilder {
     }
 
     /// Build connection and proceed with tls setup.
-    pub async fn tls_setup(self) -> Result<TlsBuilder, Error> {
+    pub async fn tls_setup(mut self) -> Result<TlsBuilder, Error> {
+        self.http_connector
+            .enforce_http(false);
         let stream =
             connection_establish_proxy(
                 self.proxy_addr,
