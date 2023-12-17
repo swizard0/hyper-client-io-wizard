@@ -275,6 +275,8 @@ impl ConnectionBuilder {
                     stream,
                 },
             ),
+            http1_support: true,
+            http2_support: false,
         })
     }
 
@@ -378,6 +380,8 @@ impl Socks5ProxyBuilder {
                     stream,
                 },
             ),
+            http1_support: true,
+            http2_support: false,
         })
     }
 
@@ -604,6 +608,8 @@ impl TlsBuilderConfig {
                         stream: self.stream,
                     },
                 ),
+                http1_support: true,
+                http2_support: false,
             });
         }
         if self.uri_scheme != http::uri::Scheme::HTTPS {
@@ -645,6 +651,8 @@ impl TlsBuilderConfig {
                     stream: TokioIo::new(tls),
                 },
             ),
+            http1_support: self.http1_enabled,
+            http2_support: self.http2_enabled,
         })
     }
 

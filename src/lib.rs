@@ -29,11 +29,21 @@ mod resolver;
 
 pub struct Io {
     kind: IoKind,
+    http1_support: bool,
+    http2_support: bool,
 }
 
 impl Io {
     pub fn resolver_setup() -> builder::ResolverBuilder {
         builder::ResolverBuilder::new()
+    }
+
+    pub fn http1_support_announced(&self) -> bool {
+        self.http1_support
+    }
+
+    pub fn http2_support_announced(&self) -> bool {
+        self.http2_support
     }
 }
 
