@@ -2,7 +2,7 @@
 [Documentation](https://docs.rs/hyper-client-io-wizard) | [Crates.io](https://crates.io/crates/hyper-client-io-wizard) | [Repository](https://github.com/swizard0/hyper-client-io-wizard)
 
 ## Why hyper-client-io-wizard?
-This project's goal is to provide a simple and straightforward connection builder for [hyper v1](https://crates.io/crates/hyper) HTTP client.
+This project's goal is to provide a simple and straightforward connection builder for [hyper v1](https://crates.io/crates/hyper) HTTP client [hyper::client::conn](https://docs.rs/hyper/latest/hyper/client/conn/index.html).
 
 ## Features
 Currently supports following configurations:
