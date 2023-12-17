@@ -80,7 +80,7 @@ async fn main() -> Result<(), Error> {
     let cli_args = CliArgs::parse();
     log::debug!("program starts as: {:?}", cli_args);
 
-    let uri = cli_args.url.parse()
+    let uri: http::uri::Uri = cli_args.url.parse()
         .map_err(|error| Error::ParseUri {
             url: cli_args.url.clone(),
             error,
@@ -89,7 +89,7 @@ async fn main() -> Result<(), Error> {
 
     let builder = Io::resolver_setup()
         .system()
-        .connection_setup(uri)?
+        .connection_setup(uri.clone())?
         .connect_timeout(
             cli_args.connect_timeout_ms
                 .map(Duration::from_millis),
@@ -118,7 +118,8 @@ async fn main() -> Result<(), Error> {
         .await?;
 
     let mut request = http::Request::builder()
-        .header(http::header::HOST, io.uri_host);
+        .header(http::header::HOST, io.uri_host)
+        .uri(uri);
     for additional_header in &cli_args.header {
         let (header_name, header_value) = additional_header
             .split_once(": ")
