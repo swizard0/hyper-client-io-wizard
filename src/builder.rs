@@ -63,7 +63,7 @@ pub enum Error {
         error: rustls::pki_types::InvalidDnsNameError,
     },
     Connection(Box<dyn std::error::Error>),
-    ConnectionToSocks5(Box<dyn std::error::Error>),
+    ConnectionToSocks5(Box<dyn std::error::Error + Send + Sync + 'static>),
     ConnectionViaSocks5(async_socks5::Error),
     ConnectionTls(std::io::Error),
 }
@@ -723,7 +723,7 @@ async fn connection_establish_proxy(
         )
         .await
         .map_err(|error| {
-            Error::ConnectionToSocks5(Box::new(error) as Box<dyn std::error::Error>)
+            Error::ConnectionToSocks5(Box::new(error) as Box<dyn std::error::Error + Send + Sync + 'static>)
         })?;
     let stream = tokio_io_stream
         .into_inner();
