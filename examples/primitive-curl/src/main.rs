@@ -64,6 +64,7 @@ pub enum Error {
         additional_header: String,
     },
     IoBuilder(hyper_client_io_wizard::builder::Error),
+    HandshakeHttp1(hyper::Error),
     HandshakeHttp2(hyper::Error),
     HttpProtocolsAreNotAnnounced,
     RequestBuild(http::Error),
@@ -160,7 +161,7 @@ async fn main() -> Result<(), Error> {
         let (mut request_sender, connection) = conn::http1::Builder::new()
             .handshake(io.stream)
             .await
-            .map_err(Error::HandshakeHttp2)?;
+            .map_err(Error::HandshakeHttp1)?;
         tokio::spawn(connection);
         request_sender.send_request(request).await
             .map_err(Error::Request)?
