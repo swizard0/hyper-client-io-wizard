@@ -62,7 +62,7 @@ pub enum Error {
         hostname: String,
         error: rustls::pki_types::InvalidDnsNameError,
     },
-    Connection(Box<dyn std::error::Error>),
+    Connection(Box<dyn std::error::Error + Send + Sync + 'static>),
     ConnectionToSocks5(Box<dyn std::error::Error + Send + Sync + 'static>),
     ConnectionViaSocks5(async_socks5::Error),
     ConnectionTls(std::io::Error),
@@ -690,7 +690,7 @@ async fn connection_establish_tcp(
 {
     tower_service::Service::call(&mut http_connector, uri).await
         .map_err(|error| {
-            Error::Connection(Box::new(error) as Box<dyn std::error::Error>)
+            Error::Connection(Box::new(error) as Box<dyn std::error::Error + Send + Sync + 'static>)
         })
 }
 
