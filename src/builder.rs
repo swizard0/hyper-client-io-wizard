@@ -665,10 +665,17 @@ impl TlsBuilderConfig {
             .await
             .map_err(Error::ConnectionTls)?;
 
+        #[allow(clippy::match_like_matches_macro)]
+        let h2_announced = if let Some(b"h2") = tls.get_ref().1.alpn_protocol() {
+            true
+        } else {
+            false
+        };
+
         Ok(Io {
             protocols: Protocols {
                 http1_support: self.http1_enabled,
-                http2_support: self.http2_enabled,
+                http2_support: self.http2_enabled && h2_announced,
             },
             uri_host: self.uri_host,
             stream: IoStream {
