@@ -448,8 +448,8 @@ impl TlsBuilder {
     /// Passes a rustls [`ClientConfig`] to configure the TLS connection
     ///
     /// The [`alpn_protocols`](ClientConfig::alpn_protocols) field is
-    /// required to be empty (or the function will panic) and will be
-    /// rewritten to match the enabled schemes (see
+    /// required to be empty and will be rewritten to match the enabled
+    /// schemes (see
     /// [`enable_http1`](TlsBuilderConfig::enable_http1),
     /// [`enable_http2`](TlsBuilderConfig::enable_http2)) before the
     /// connector is built.
