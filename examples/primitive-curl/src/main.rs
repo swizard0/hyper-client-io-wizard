@@ -41,6 +41,10 @@ struct CliArgs {
     #[clap(long)]
     dump_headers: bool,
 
+    /// force use only http1 requests
+    #[clap(long)]
+    http1_only: bool,
+
     /// additional headers for request
     #[clap(long)]
     header: Vec<String>,
@@ -68,6 +72,7 @@ pub enum Error {
     HandshakeHttp2(hyper::Error),
     HttpProtocolsAreNotAnnounced,
     RequestBuild(http::Error),
+    RequestSenderReady(hyper::Error),
     Request(hyper::Error),
     ResponseRead(hyper::Error),
     ResponseDecodeUtf8(std::string::FromUtf8Error),
@@ -116,23 +121,37 @@ async fn main() -> Result<(), Error> {
             .tls_setup()
             .await?
     };
+    let mut tls_builder = tls_builder
+        .native_roots()?;
+    if cli_args.http1_only {
+        tls_builder = tls_builder
+            .enable_http1();
+    } else {
+        tls_builder = tls_builder
+            .enable_all_versions()
+    }
     let io = tls_builder
-        .native_roots()?
-        .enable_all_versions()
         .establish()
         .await?;
 
     let mut request_builder = http::Request::builder()
-        .header(http::header::HOST, io.uri_host)
         .uri(uri);
+    let mut host_header_found = false;
     for additional_header in &cli_args.header {
         let (header_name, header_value) = additional_header
             .split_once(": ")
             .ok_or(Error::InvalidAdditionalHeader {
                 additional_header: additional_header.to_string(),
             })?;
+        if header_name == http::header::HOST {
+            host_header_found = true;
+        }
         request_builder = request_builder
             .header(header_name, header_value);
+    }
+    if !host_header_found && !io.protocols.http2_support_announced() {
+        request_builder = request_builder
+            .header(http::header::HOST, io.uri_host);
     }
     let maybe_request = if let Some(post_data) = cli_args.post_data {
         request_builder
@@ -154,6 +173,8 @@ async fn main() -> Result<(), Error> {
             .await
             .map_err(Error::HandshakeHttp2)?;
         tokio::spawn(connection);
+        request_sender.ready().await
+            .map_err(Error::RequestSenderReady)?;
         request_sender.send_request(request).await
             .map_err(Error::Request)?
     } else if io.protocols.http1_support_announced() {
@@ -163,6 +184,7 @@ async fn main() -> Result<(), Error> {
             .await
             .map_err(Error::HandshakeHttp1)?;
         tokio::spawn(connection);
+
         request_sender.send_request(request).await
             .map_err(Error::Request)?
     } else {

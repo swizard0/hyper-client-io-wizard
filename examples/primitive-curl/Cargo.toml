@@ -1,6 +1,6 @@
 [package]
 name = "primitive-curl"
-version = "0.1.0"
+version = "0.1.2"
 edition = "2021"
 license = "MIT"
 description = "Code example for `hyper-client-io-wizard`"
