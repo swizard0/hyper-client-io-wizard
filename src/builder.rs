@@ -132,7 +132,89 @@ pub struct ConnectionBuilder {
     uri: Uri,
     uri_host: String,
     uri_scheme: http::uri::Scheme,
-    http_connector: legacy::connect::HttpConnector<resolver::HickoryResolver>,
+    resolver: resolver::HickoryResolver,
+    http_connector_params: HttpConnectorParams,
+}
+
+#[derive(Default)]
+struct HttpConnectorParams {
+    keepalive_time: Option<Option<Duration>>,
+    keepalive_interval_interval: Option<Option<Duration>>,
+    keepalive_retries_retries: Option<Option<u32>>,
+    nodelay_nodelay: Option<bool>,
+    send_buffer_size_size: Option<Option<usize>>,
+    recv_buffer_size_size: Option<Option<usize>>,
+    local_address_addr: Option<Option<IpAddr>>,
+    local_addresses_addrs: Option<(Ipv4Addr, Ipv6Addr)>,
+    connect_timeout_dur: Option<Option<Duration>>,
+    happy_eyeballs_timeout_dur: Option<Option<Duration>>,
+    reuse_address_reuse_address: Option<bool>,
+    #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
+    interface_interface: Option<String>,
+}
+
+impl HttpConnectorParams {
+    fn apply_resolver(
+        &self,
+        resolver: &mut resolver::HickoryResolver,
+    )
+    {
+        if let Some(maybe_ip) = &self.local_address_addr {
+            if let Some(ip) = maybe_ip {
+                if ip.is_ipv4() {
+                    resolver.force_ip4();
+                } else if ip.is_ipv6() {
+                    resolver.force_ip6();
+                }
+            } else {
+                resolver.force_none();
+            }
+        }
+    }
+
+    fn apply(
+        self,
+        http_connector: &mut legacy::connect::HttpConnector<resolver::HickoryResolver>,
+    )
+    {
+        if let Some(value) = self.keepalive_time {
+            http_connector.set_keepalive(value);
+        }
+        if let Some(value) = self.keepalive_interval_interval {
+            http_connector.set_keepalive_interval(value);
+        }
+        if let Some(value) = self.keepalive_retries_retries {
+            http_connector.set_keepalive_retries(value);
+        }
+        if let Some(value) = self.nodelay_nodelay {
+            http_connector.set_nodelay(value);
+        }
+        if let Some(value) = self.send_buffer_size_size {
+            http_connector.set_send_buffer_size(value);
+        }
+        if let Some(value) = self.recv_buffer_size_size {
+            http_connector.set_recv_buffer_size(value);
+        }
+        if let Some(maybe_ip) = self.local_address_addr {
+            http_connector.set_local_address(maybe_ip);
+        }
+        if let Some((ip4, ip6)) = self.local_addresses_addrs {
+            http_connector.set_local_addresses(ip4, ip6);
+        }
+        if let Some(value) = self.connect_timeout_dur {
+            http_connector.set_connect_timeout(value);
+        }
+        if let Some(value) = self.happy_eyeballs_timeout_dur {
+            http_connector.set_happy_eyeballs_timeout(value);
+        }
+        if let Some(value) = self.reuse_address_reuse_address {
+            http_connector.set_reuse_address(value);
+        }
+        #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
+        if let Some(value) = self.interface_interface {
+            http_connector.set_interface(value);
+        }
+    }
 }
 
 impl ConnectionBuilder {
@@ -148,7 +230,8 @@ impl ConnectionBuilder {
             uri,
             uri_host,
             uri_scheme,
-            http_connector: legacy::connect::HttpConnector::new_with_resolver(resolver),
+            resolver,
+            http_connector_params: HttpConnectorParams::default(),
         }
     }
 
@@ -159,20 +242,20 @@ impl ConnectionBuilder {
     ///
     /// Default is `None`.
     pub fn keepalive(mut self, time: Option<Duration>) -> Self {
-        self.http_connector.set_keepalive(time);
+        self.http_connector_params.keepalive_time = Some(time);
         self
     }
 
     /// Set the duration between two successive TCP keepalive retransmissions,
     /// if acknowledgement to the previous keepalive transmission is not received.
     pub fn keepalive_interval(mut self, interval: Option<Duration>) -> Self {
-        self.http_connector.set_keepalive_interval(interval);
+        self.http_connector_params.keepalive_interval_interval = Some(interval);
         self
     }
 
     /// Set the number of retransmissions to be carried out before declaring that remote end is not available.
     pub fn keepalive_retries(mut self, retries: Option<u32>) -> Self {
-        self.http_connector.set_keepalive_retries(retries);
+        self.http_connector_params.keepalive_retries_retries = Some(retries);
         self
     }
 
@@ -180,19 +263,19 @@ impl ConnectionBuilder {
     ///
     /// Default is `false`.
     pub fn nodelay(mut self, nodelay: bool) -> Self {
-        self.http_connector.set_nodelay(nodelay);
+        self.http_connector_params.nodelay_nodelay = Some(nodelay);
         self
     }
 
     /// Sets the value of the SO_SNDBUF option on the socket.
     pub fn send_buffer_size(mut self, size: Option<usize>) -> Self {
-        self.http_connector.set_send_buffer_size(size);
+        self.http_connector_params.send_buffer_size_size = Some(size);
         self
     }
 
     /// Sets the value of the SO_RCVBUF option on the socket.
     pub fn recv_buffer_size(mut self, size: Option<usize>) -> Self {
-        self.http_connector.set_recv_buffer_size(size);
+        self.http_connector_params.recv_buffer_size_size = Some(size);
         self
     }
 
@@ -202,14 +285,14 @@ impl ConnectionBuilder {
     ///
     /// Default is `None`.
     pub fn local_address(mut self, addr: Option<IpAddr>) -> Self {
-        self.http_connector.set_local_address(addr);
+        self.http_connector_params.local_address_addr = Some(addr);
         self
     }
 
     /// Set that all sockets are bound to the configured IPv4 or IPv6 address (depending on host's
     /// preferences) before connection.
     pub fn local_addresses(mut self, addr_ipv4: Ipv4Addr, addr_ipv6: Ipv6Addr) -> Self {
-        self.http_connector.set_local_addresses(addr_ipv4, addr_ipv6);
+        self.http_connector_params.local_addresses_addrs = Some((addr_ipv4, addr_ipv6));
         self
     }
 
@@ -220,7 +303,7 @@ impl ConnectionBuilder {
     ///
     /// Default is `None`.
     pub fn connect_timeout(mut self, dur: Option<Duration>) -> Self {
-        self.http_connector.set_connect_timeout(dur);
+        self.http_connector_params.connect_timeout_dur = Some(dur);
         self
     }
 
@@ -237,7 +320,7 @@ impl ConnectionBuilder {
     ///
     /// [RFC 6555]: https://tools.ietf.org/html/rfc6555
     pub fn happy_eyeballs_timeout(mut self, dur: Option<Duration>) -> Self {
-        self.http_connector.set_happy_eyeballs_timeout(dur);
+        self.http_connector_params.happy_eyeballs_timeout_dur = Some(dur);
         self
     }
 
@@ -245,7 +328,7 @@ impl ConnectionBuilder {
     ///
     /// Default is `false`.
     pub fn reuse_address(mut self, reuse_address: bool) -> Self {
-        self.http_connector.set_reuse_address(reuse_address);
+        self.http_connector_params.reuse_address_reuse_address = Some(reuse_address);
         self
     }
 
@@ -263,13 +346,23 @@ impl ConnectionBuilder {
     /// [VRF]: https://www.kernel.org/doc/Documentation/networking/vrf.txt
     #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
     pub fn interface<S: Into<String>>(mut self, interface: S) -> Self {
-        self.http_connector.set_interface(interface);
+        self.http_connector_params.interface = Some(interface.to_string());
         self
     }
 
     /// Build and establish connection
-    pub async fn establish(self) -> Result<Io, Error> {
-        let stream = connection_establish_tcp(self.http_connector, self.uri).await?;
+    pub async fn establish(mut self) -> Result<Io, Error> {
+        self.http_connector_params.apply_resolver(
+            &mut self.resolver,
+        );
+        let mut http_connector =
+            legacy::connect::HttpConnector::new_with_resolver(
+                self.resolver,
+            );
+        self.http_connector_params.apply(
+            &mut http_connector,
+        );
+        let stream = connection_establish_tcp(http_connector, self.uri).await?;
         Ok(Io {
             protocols: Protocols {
                 http1_support: true,
@@ -288,9 +381,19 @@ impl ConnectionBuilder {
 
     /// Build connection and proceed with tls setup.
     pub async fn tls_setup(mut self) -> Result<TlsBuilder, Error> {
-        self.http_connector
+        self.http_connector_params.apply_resolver(
+            &mut self.resolver,
+        );
+        let mut http_connector =
+            legacy::connect::HttpConnector::new_with_resolver(
+                self.resolver,
+            );
+        self.http_connector_params.apply(
+            &mut http_connector,
+        );
+        http_connector
             .enforce_http(false);
-        let stream = connection_establish_tcp(self.http_connector, self.uri.clone()).await?;
+        let stream = connection_establish_tcp(http_connector, self.uri.clone()).await?;
         Ok(TlsBuilder::new(
             stream,
             self.uri,
@@ -300,10 +403,20 @@ impl ConnectionBuilder {
     }
 
     /// Build connection and proceed with socks5 proxy setup.
-    pub fn socks5_proxy_setup(self, proxy_addr: Uri) -> Socks5ProxyBuilder {
+    pub fn socks5_proxy_setup(mut self, proxy_addr: Uri) -> Socks5ProxyBuilder {
+        self.http_connector_params.apply_resolver(
+            &mut self.resolver,
+        );
+        let mut http_connector =
+            legacy::connect::HttpConnector::new_with_resolver(
+                self.resolver,
+            );
+        self.http_connector_params.apply(
+            &mut http_connector,
+        );
         Socks5ProxyBuilder::new(
             proxy_addr,
-            self.http_connector,
+            http_connector,
             self.uri,
             self.uri_host,
             self.uri_scheme,

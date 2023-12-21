@@ -39,6 +39,7 @@ use hyper_util::{
 #[derive(Clone)]
 pub struct HickoryResolver {
     hickory_resolver: Arc<AsyncResolver<GenericConnector<TokioRuntimeProvider>>>,
+    force_ip_kind: Option<ForceIpKind>,
 }
 
 pub enum ResolverKind {
@@ -46,6 +47,12 @@ pub enum ResolverKind {
     Google,
     GoogleTls,
     GoogleHttps,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum ForceIpKind {
+    Ip4,
+    Ip6,
 }
 
 impl HickoryResolver {
@@ -70,9 +77,23 @@ impl HickoryResolver {
                 ),
         };
 
+
         Ok(Self {
             hickory_resolver: Arc::new(hickory_resolver),
+            force_ip_kind: None,
         })
+    }
+
+    pub(super) fn force_ip4(&mut self) {
+        self.force_ip_kind = Some(ForceIpKind::Ip4);
+    }
+
+    pub(super) fn force_ip6(&mut self) {
+        self.force_ip_kind = Some(ForceIpKind::Ip6);
+    }
+
+    pub(super) fn force_none(&mut self) {
+        self.force_ip_kind = None;
     }
 }
 
@@ -100,15 +121,43 @@ impl tower_service::Service<dns::Name> for HickoryResolver {
     fn call(&mut self, name: dns::Name) -> Self::Future {
         log::debug!("resolving host: {:?}", name);
         let resolver = self.hickory_resolver.clone();
+        let force_ip_kind = self.force_ip_kind;
         let name_clone = name.clone();
         let fut = async move {
-            let lookup_ip = resolver.lookup_ip(name_clone.as_str()).await?;
-            let socket_addr_iter = lookup_ip
-                .iter()
-                .map(|ip_addr| (ip_addr, 0).into())
-                .collect::<Vec<SocketAddr>>()
-                .into_iter();
-            Ok(HickoryAddrs { socket_addr_iter, })
+            let socket_addrs: Vec<SocketAddr> =
+                match force_ip_kind {
+                    None => {
+                        let lookup_ip = resolver.lookup_ip(name_clone.as_str()).await?;
+                        lookup_ip
+                            .iter()
+                            .map(|ip_addr| (ip_addr, 0).into())
+                            .collect()
+                    },
+                    Some(ForceIpKind::Ip4) => {
+                        let lookup_ip4 = resolver.ipv4_lookup(name_clone.as_str()).await?;
+                        lookup_ip4
+                            .iter()
+                            .map(|ip_addr| {
+                                let ip: std::net::Ipv4Addr = (*ip_addr).into();
+                                (ip, 0).into()
+                            })
+                            .collect()
+                    },
+                    Some(ForceIpKind::Ip6) => {
+                        let lookup_ip6 = resolver.ipv6_lookup(name_clone.as_str()).await?;
+                        lookup_ip6
+                            .iter()
+                            .map(|ip_addr| {
+                                let ip: std::net::Ipv6Addr = (*ip_addr).into();
+                                (ip, 0).into()
+                            })
+                            .collect()
+                    },
+                };
+
+            Ok(HickoryAddrs {
+                socket_addr_iter: socket_addrs.into_iter(),
+            })
         };
         Box::pin(fut)
     }
