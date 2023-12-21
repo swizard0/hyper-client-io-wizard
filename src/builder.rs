@@ -346,7 +346,7 @@ impl ConnectionBuilder {
     /// [VRF]: https://www.kernel.org/doc/Documentation/networking/vrf.txt
     #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
     pub fn interface<S: Into<String>>(mut self, interface: S) -> Self {
-        self.http_connector_params.interface = Some(interface.to_string());
+        self.http_connector_params.interface_interface = Some(interface.into());
         self
     }
 
