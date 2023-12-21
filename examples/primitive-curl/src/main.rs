@@ -37,6 +37,10 @@ struct CliArgs {
     #[clap(short, long)]
     socks5_proxy: Option<String>,
 
+    /// local address for connection to use
+    #[clap(long)]
+    use_local_address: Option<String>,
+
     /// dump response headers
     #[clap(long)]
     dump_headers: bool,
@@ -67,6 +71,7 @@ pub enum Error {
     InvalidAdditionalHeader {
         additional_header: String,
     },
+    InvalidLocalAddress(std::net::AddrParseError),
     IoBuilder(hyper_client_io_wizard::builder::Error),
     HandshakeHttp1(hyper::Error),
     HandshakeHttp2(hyper::Error),
@@ -97,13 +102,20 @@ async fn main() -> Result<(), Error> {
         })?;
     log::debug!("using uri: {uri:?}");
 
-    let builder = Io::resolver_setup()
+    let mut builder = Io::resolver_setup()
         .system()
         .connection_setup(uri.clone())?
         .connect_timeout(
             cli_args.connect_timeout_ms
                 .map(Duration::from_millis),
         );
+    if let Some(local_address) = cli_args.use_local_address {
+        let ip_address = local_address.parse()
+            .map_err(Error::InvalidLocalAddress)?;
+        log::debug!("using local address: {ip_address:?}");
+        builder = builder
+            .local_address(Some(ip_address));
+    }
     let tls_builder = if let Some(socks5_proxy) = &cli_args.socks5_proxy {
         let proxy_uri = socks5_proxy.parse()
             .map_err(|error| Error::ParseSocks5Proxy {
